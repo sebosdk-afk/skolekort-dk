@@ -1,7 +1,9 @@
-name: Byg skoler.json automatisk (minimal)
+name: Byg skoler.json automatisk
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"  # valgfrit: kør hver mandag kl. 03
 
 permissions:
   contents: write
@@ -18,19 +20,21 @@ jobs:
           python-version: "3.11"
 
       - name: Installer afhængigheder
-        run: pip install pandas chardet
+        run: pip install pandas requests chardet
 
-      - name: Generer skoler.json (uden geokodning)
+      - name: Generer skoler.json (geokodning + region)
+        env:
+          LIMIT: "300"   # start med 300 for at teste. Sæt til 0 eller slet for ALLE senere.
         shell: python
         run: |
-          import pandas as pd, json, pathlib
+          import pandas as pd, requests, json, time, os, pathlib
           from chardet import detect
 
           csv_path = pathlib.Path("data/folkeskoler.csv")
           raw = csv_path.read_bytes()
           enc = detect(raw)["encoding"] or "latin1"
 
-          # Læs CSV robust (auto-separator; ingen low_memory her)
+          # Læs CSV robust
           df = pd.read_csv(csv_path, sep=None, engine="python", encoding=enc)
           df.columns = [c.strip().lower() for c in df.columns]
 
@@ -47,31 +51,61 @@ jobs:
           col_by   = pick("bynavn","by","postdistrikt")
           col_kom  = pick("kommunenavn","kommune")
 
+          required = [col_inst,col_navn,col_vej,col_post,col_by,col_kom]
+          missing = [x for x in required if not x]
+          if missing:
+              raise SystemExit("Mangler kolonner i CSV: " + str(missing))
+
+          limit = int(os.getenv("LIMIT","0") or "0")
+          if limit > 0:
+              df = df.head(limit)
+
+          # Kommune -> region (DAGI)
+          kommuner = requests.get("https://api.dataforsyningen.dk/kommuner?format=json", timeout=30).json()
+          kom2reg = {k["navn"]: k["region"]["navn"] for k in kommuner}
+
           rows = []
-          for _, r in df.head(300).iterrows():  # først 300 til test
+          for _, r in df.iterrows():
               adr = f"{r.get(col_vej,'')} {r.get(col_hus,'')}, {r.get(col_post,'')} {r.get(col_by,'')}".replace("  "," ").strip(", ").strip()
+
+              lon = lat = None
+              try:
+                  q = requests.get("https://api.dataforsyningen.dk/adresser",
+                                   params={"q": adr, "per_side":1}, timeout=20)
+                  js = q.json()
+                  if isinstance(js, list) and js:
+                      lon, lat = js[0]["adgangsadresse"]["adgangspunkt"]["koordinater"]
+              except Exception as e:
+                  # log let, men fortsæt
+                  print("Geokodningsfejl:", adr, e)
+
+              kommune = str(r.get(col_kom,"") or "").strip()
+              region = kom2reg.get(kommune, "")
+
               rows.append({
                   "id": str(r.get(col_inst,"") or ""),
                   "navn": str(r.get(col_navn,"") or ""),
                   "adresse": adr,
                   "postnr": str(r.get(col_post,"") or ""),
                   "by": str(r.get(col_by,"") or ""),
-                  "kommune_navn": str(r.get(col_kom,"") or ""),
-                  "region_navn": "",
-                  "lon": None,
-                  "lat": None
+                  "kommune_navn": kommune,
+                  "region_navn": region,
+                  "lon": lon,
+                  "lat": lat
               })
+
+              time.sleep(0.03)  # vær høflig mod API’et
 
           pathlib.Path("data/skoler.json").write_text(
               json.dumps(rows, ensure_ascii=False, indent=2),
               encoding="utf-8"
           )
-          print("✅ Skrev", len(rows), "rækker til data/skoler.json")
+          print("✅ Skrev", len(rows), "skoler til data/skoler.json")
 
       - name: Commit & Push
         run: |
           git config user.name "Auto Data Bot"
           git config user.email "bot@example.com"
           git add data/skoler.json
-          git commit -m "Opdater skoler.json (minimal build)" || echo "Ingen ændringer"
+          git commit -m "Opdateret skoler.json (auto)" || echo "Ingen ændringer"
           git push
