@@ -51,7 +51,7 @@ jobs:
 
           print("Encoding:", enc, "Delimiter:", repr(sep))
 
-          df = pd.read_csv(csv_path, sep=sep, engine="python", encoding=enc, low_memory=False)
+          df = pd.read_csv(csv_path, sep=sep, engine="python", encoding=enc)
 
           # fjern nulbytes + trim
           for c in df.select_dtypes(include=["object"]).columns:
