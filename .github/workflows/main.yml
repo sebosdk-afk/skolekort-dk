@@ -25,7 +25,7 @@ jobs:
       # Laver data/skoler.json direkte fra CSV (bruger dine kolonnenavne)
       - name: Generer skoler.json (fra CSV med lat/lon + region)
         env:
-          LIMIT: "300"        # sæt til "0" eller slet linjen for ALLE rækker
+          LIMIT: "0"        # sæt til "0" eller slet linjen for ALLE rækker
         shell: python
         run: |
           import pandas as pd, json, os, pathlib, re
