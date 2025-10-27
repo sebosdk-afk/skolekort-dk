@@ -3,7 +3,11 @@ name: Byg skoler.json automatisk
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * 1"  # hver mandag kl 03:00
+    - cron: "0 3 * * 1"  # mandag kl. 03:00
+
+# VIGTIGT: giv workflow lov at skrive til repo
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -17,50 +21,91 @@ jobs:
           python-version: "3.11"
 
       - name: Installer afhængigheder
-        run: pip install pandas requests
+        run: pip install pandas requests python-dateutil
 
-      - name: Generer skoler.json
+      - name: Generer skoler.json (robust)
+        env:
+          LIMIT: "200"  # kør kun første 200 rækker første gang for hurtigere test. Fjern/øge senere.
         run: |
           python3 << 'EOF'
-          import pandas as pd, requests, json
+          import pandas as pd, requests, json, os, time
 
-          df = pd.read_csv("data/folkeskoler.csv", sep=";")
+          # --- Læs CSV robust: auto-separator, UTF-8 med evt. BOM ---
+          path = "data/folkeskoler.csv"
+          df = pd.read_csv(path, sep=None, engine="python", encoding="utf-8-sig")
+          # Normaliser kolonnenavne (små bogstaver, uden mellemrum)
+          df.columns = [c.strip().lower() for c in df.columns]
+
+          def pick(*names):
+              for n in names:
+                  if n in df.columns: return n
+              return None
+
+          col_instnr   = pick("institutionsnummer","instnr","institutionnummer")
+          col_instnavn = pick("institutionsnavn","navn","institution")
+          col_vejnavn  = pick("vejnavn","adresse","vej")
+          col_husnr    = pick("husnr","husnummer","nr")
+          col_postnr   = pick("postnr","postnummer")
+          col_bynavn   = pick("bynavn","by")
+          col_kommune  = pick("kommunenavn","kommune")
+
+          needed = [col_instnr,col_instnavn,col_vejnavn,col_postnr,col_bynavn,col_kommune]
+          missing = [x for x in needed if not x]
+          if missing:
+              raise SystemExit(f"Mangler forventede kolonner i CSV: {missing}. Fundne kolonner: {list(df.columns)}")
+
+          # Begræns mængde første run (kan skrues op/ned)
+          limit = int(os.getenv("LIMIT","0"))
+          if limit>0:
+              df = df.head(limit)
+
+          print(f"Læser rækker: {len(df)}")
+          # Hent kommuner (til region)
+          kommuner = requests.get("https://api.dataforsyningen.dk/kommuner?format=json", timeout=30).json()
+          kom2reg = {k["navn"]: k["region"]["navn"] for k in kommuner}
+
           rows = []
+          for i, r in df.iterrows():
+              vej = str(r.get(col_vejnavn, "")).strip()
+              hus = str(r.get(col_husnr, "")).strip() if col_husnr else ""
+              pn  = str(r.get(col_postnr, "")).strip()
+              by  = str(r.get(col_bynavn, "")).strip()
+              adr = f"{vej} {hus}, {pn} {by}".replace("  ", " ").strip(", ").strip()
 
-          kommune_data = requests.get("https://api.dataforsyningen.dk/kommuner?format=json").json()
+              # Geokod via DAWA
+              lon = lat = None
+              try:
+                  q = requests.get("https://api.dataforsyningen.dk/adresser",
+                                   params={"q": adr, "per_side":1},
+                                   timeout=20)
+                  js = q.json()
+                  if js:
+                      lon, lat = js[0]["adgangsadresse"]["adgangspunkt"]["koordinater"]
+              except Exception as e:
+                  print(f"Geokodningsfejl ved '{adr}': {e}")
 
-          def find_region(kommune_navn):
-              for k in kommune_data:
-                  if k["navn"] == kommune_navn:
-                      return k["region"]["navn"]
-              return ""
-
-          for _, r in df.iterrows():
-              adr = f"{r.get('Vejnavn','')} {r.get('Husnr','')}, {r.get('Postnr','')} {r.get('Bynavn','')}".strip()
-              q = requests.get("https://api.dataforsyningen.dk/adresser", params={"q": adr, "per_side":1})
-              js = q.json()
-              if js:
-                  lon, lat = js[0]["adgangsadresse"]["adgangspunkt"]["koordinater"]
-              else:
-                  lon = lat = None
-
-              kommune = r.get("Kommunenavn","")
-              region = find_region(kommune)
+              kommune = str(r.get(col_kommune,"")).strip()
+              region = kom2reg.get(kommune, "")
 
               rows.append({
-                  "id": str(r.get("Institutionsnummer","")),
-                  "navn": r.get("Institutionsnavn",""),
+                  "id": str(r.get(col_instnr,"")).strip(),
+                  "navn": str(r.get(col_instnavn,"")).strip(),
                   "adresse": adr,
-                  "postnr": str(r.get("Postnr","")),
-                  "by": r.get("Bynavn",""),
+                  "postnr": pn,
+                  "by": by,
                   "kommune_navn": kommune,
                   "region_navn": region,
                   "lon": lon,
                   "lat": lat
               })
 
+              # Lille pause for at være høflig mod API'et
+              time.sleep(0.05)
+
           with open("data/skoler.json","w",encoding="utf-8") as f:
               json.dump(rows, f, ensure_ascii=False, indent=2)
+
+          print(f"Skrev {len(rows)} rækker til data/skoler.json")
           EOF
 
       - name: Commit & Push
