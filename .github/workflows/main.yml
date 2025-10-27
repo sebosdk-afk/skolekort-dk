@@ -3,7 +3,7 @@ name: Byg skoler.json automatisk
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * 1"
+    - cron: "0 3 * * 1"   # valgfrit: kør mandag kl. 03
 
 permissions:
   contents: write
@@ -22,9 +22,9 @@ jobs:
       - name: Installer afhængigheder
         run: pip install pandas chardet
 
-      - name: Generer skoler.json (robust læsning + rens af \x00)
+      - name: Generer skoler.json (robust encoding + rens)
         env:
-          LIMIT: "0"    # "0" = alle rækker. Sæt "300" hvis du vil teste hurtigt.
+          LIMIT: "0"     # "0" = alle rækker; sæt "300" for at teste hurtigt
         shell: python
         run: |
           import pandas as pd, json, os, pathlib, re, csv, chardet
@@ -32,17 +32,14 @@ jobs:
           DATA_DIR = pathlib.Path("data")
           csv_path = DATA_DIR / "folkeskoler.csv"
 
-          # --- detektér encoding på en lille prøve ---
           raw = csv_path.read_bytes()
           head = raw[:65536]
-          enc_guess = chardet.detect(head).get("encoding") or "utf-8"
-          # forceér UTF-16 hvis BOM
+          enc = (chardet.detect(head).get("encoding") or "utf-8").lower()
           if head.startswith(b"\xff\xfe") or head.startswith(b"\xfe\xff"):
-            enc_guess = "utf-16"
+            enc = "utf-16"
 
-          # --- prøv at gætte delimiter ---
           try:
-            sample = head.decode(enc_guess, errors="ignore")
+            sample = head.decode(enc, errors="ignore")
           except:
             sample = head.decode("utf-8", errors="ignore")
 
@@ -50,39 +47,23 @@ jobs:
             dialect = csv.Sniffer().sniff(sample, delimiters=";,|\t")
             sep = dialect.delimiter
           except:
-            sep = None  # lad pandas gætte
+            sep = None
 
-          print("Encoding:", enc_guess, "Delimiter:", repr(sep))
+          print("Encoding:", enc, "Delimiter:", repr(sep))
 
-          # --- læs CSV robust ---
-          df = pd.read_csv(
-            csv_path,
-            sep=sep,
-            engine="python",
-            encoding=enc_guess,
-            low_memory=False
-          )
+          df = pd.read_csv(csv_path, sep=sep, engine="python", encoding=enc, low_memory=False)
 
-          # --- fjern nul-bytes og trim alle tekstfelter ---
+          # fjern nulbytes + trim
           for c in df.select_dtypes(include=["object"]).columns:
-            df[c] = (
-              df[c]
-              .astype(str)
-              .str.replace("\x00", "", regex=False)
-              .str.strip()
-            )
+            df[c] = df[c].astype(str).str.replace("\x00","",regex=False).str.strip()
 
-          # --- normaliser kolonnenavne til matching ---
-          def norm(s): return re.sub(r'[^a-z0-9]', '', str(s).lower())
+          def norm(s): return re.sub(r'[^a-z0-9]','',str(s).lower())
           nmap = {c: norm(c) for c in df.columns}
-          inv  = {v: k for k, v in nmap.items()}  # norm -> original
+          inv  = {v:k for k,v in nmap.items()}
+          def pick(*ns):
+            for n in ns:
+              if n in inv: return inv[n]
 
-          def pick(*norm_names):
-            for n in norm_names:
-              if n in inv:
-                return inv[n]
-
-          # dine felter + aliaser (fra dine tidligere screenshots)
           col_inst = pick("instnr","institutionsnummer","institutionnummer","inst")
           col_navn = pick("instnavn","institutionsnavn","skolenavn","navn")
           col_adr  = pick("instadr","adresse","vejnavn","vej")
@@ -93,52 +74,22 @@ jobs:
           col_lat  = pick("geobreddegrad","latitude","lat")
           col_lon  = pick("geolaengdegrad","longitude","lon","lng")
 
-          required = [col_inst,col_navn,col_adr,col_post,col_by,col_kom]
-          missing  = [c for c in required if not c]
-          if missing:
-            raise SystemExit(f"Mangler kolonner i CSV: {missing}\nKolonner fundet: {list(df.columns)}")
+          req = [col_inst,col_navn,col_adr,col_post,col_by,col_kom]
+          miss = [c for c in req if not c]
+          if miss: raise SystemExit(f"Mangler kolonner: {miss}\nHar: {list(df.columns)}")
 
-          # evt. begræns til test
-          limit = int(os.getenv("LIMIT","0") or "0")
-          if limit > 0:
-            df = df.head(limit)
-
-          # sikkert float af lon/lat (virker for "12,34" og "12.34")
           def to_float(v):
             try:
-              v = str(v).replace(",", ".")
-              x = float(v)
-              return x
+              v = str(v).replace(",",".")
+              return float(v)
             except:
               return None
 
+          limit = int(os.getenv("LIMIT","0") or "0")
+          if limit>0: df = df.head(limit)
+
           rows=[]
           for _, r in df.iterrows():
-            adr = ", ".join([str(r.get(col_adr,"") or "").strip(),
-                             f'{str(r.get(col_post,"") or "").strip()} {str(r.get(col_by,"") or "").strip()}']).strip(", ")
-            lat = to_float(r.get(col_lat, None)) if col_lat else None
-            lon = to_float(r.get(col_lon, None)) if col_lon else None
-            rows.append({
-              "id": str(r.get(col_inst,"") or ""),
-              "navn": str(r.get(col_navn,"") or ""),
-              "adresse": adr,
-              "postnr": str(r.get(col_post,"") or ""),
-              "by": str(r.get(col_by,"") or ""),
-              "kommune_navn": str(r.get(col_kom,"") or ""),
-              "region_navn": str(r.get(col_reg,"") or "") if col_reg else "",
-              "lon": lon,
-              "lat": lat
-            })
-
-          # skriv pæn og ren JSON (UTF-8)
-          out = DATA_DIR / "skoler.json"
-          out.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
-          print("✅ Skrev", len(rows), "skoler til", out)
-
-      - name: Commit & Push
-        run: |
-          git config user.name "Auto Data Bot"
-          git config user.email "bot@example.com"
-          git add data/skoler.json
-          git commit -m "Opdateret skoler.json (robust encoding fix)" || echo "Ingen ændringer"
-          git push
+            adr = ", ".join([
+              str(r.get(col_adr,"") or "").strip(),
+              f'{str(r.get(col_post,"") or "").strip()} {str(r.get(col_
