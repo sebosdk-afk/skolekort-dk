@@ -92,4 +92,28 @@ jobs:
           for _, r in df.iterrows():
             adr = ", ".join([
               str(r.get(col_adr,"") or "").strip(),
-              f'{str(r.get(col_post,"") or "").strip()} {str(r.get(col_
+              f'{str(r.get(col_post,"") or "").strip()} {str(r.get(col_by,"") or "").strip()}'
+            ]).strip(", ")
+            rows.append({
+              "id": str(r.get(col_inst,"") or ""),
+              "navn": str(r.get(col_navn,"") or ""),
+              "adresse": adr,
+              "postnr": str(r.get(col_post,"") or ""),
+              "by": str(r.get(col_by,"") or ""),
+              "kommune_navn": str(r.get(col_kom,"") or ""),
+              "region_navn": str(r.get(col_reg,"") or "") if col_reg else "",
+              "lon": to_float(r.get(col_lon)) if col_lon else None,
+              "lat": to_float(r.get(col_lat)) if col_lat else None
+            })
+
+          out = DATA_DIR / "skoler.json"
+          out.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+          print("✅ Skrev", len(rows), "skoler til", out)
+
+      - name: Commit & Push
+        run: |
+          git config user.name "Auto Data Bot"
+          git config user.email "bot@example.com"
+          git add data/skoler.json
+          git commit -m "Opdateret skoler.json (robust encoding fix)" || echo "Ingen ændringer"
+          git push
