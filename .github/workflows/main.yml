@@ -1,0 +1,39 @@
+name: Byg skoler.json automatisk
+
+on:
+  workflow_dispatch:  # gør knappen "Run workflow" synlig
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Generer skoler.json (minimal test)
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          # skriv en lille testfil så vi kan se at workflow virker
+          pathlib.Path("data").mkdir(exist_ok=True)
+          pathlib.Path("data/skoler.json").write_text(json.dumps(
+              [{"id":"TEST","navn":"Workflow virker","lon":12.0,"lat":55.0}],
+              ensure_ascii=False, indent=2
+          ), encoding="utf-8")
+          print("Skrev data/skoler.json")
+PY
+
+      - name: Commit & Push
+        run: |
+          git config user.name "Auto Data Bot"
+          git config user.email "bot@example.com"
+          git add data/skoler.json
+          git commit -m "Workflow test: skoler.json skrevet" || echo "Ingen ændringer"
+          git push
