@@ -1,9 +1,7 @@
-name: Byg skoler.json automatisk
+name: Byg skoler.json automatisk (minimal)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 3 * * 1"
 
 permissions:
   contents: write
@@ -20,28 +18,25 @@ jobs:
           python-version: "3.11"
 
       - name: Installer afhængigheder
-        run: pip install pandas requests chardet
+        run: pip install pandas chardet
 
-      - name: Generer skoler.json (automatisk)
-        env:
-          LIMIT: "200"   # vi starter med 200 rækker for at teste hurtigere
+      - name: Generer skoler.json (uden geokodning)
         run: |
           python - <<'PY'
-          import pandas as pd, requests, json, time
+          import pandas as pd, json, pathlib
           from chardet import detect
-          import pathlib, os
 
-          csv_file = pathlib.Path("data/folkeskoler.csv")
-          raw = csv_file.read_bytes()
+          csv_path = pathlib.Path("data/folkeskoler.csv")
+          raw = csv_path.read_bytes()
           enc = detect(raw)["encoding"] or "latin1"
 
-          df = pd.read_csv(csv_file, sep=None, engine="python", encoding=enc, low_memory=False)
+          # Læs CSV robust (auto-separator)
+          df = pd.read_csv(csv_path, sep=None, engine="python", encoding=enc, low_memory=False)
           df.columns = [c.strip().lower() for c in df.columns]
 
-          def pick(*opts):
-              for o in opts:
-                  if o in df.columns:
-                      return o
+          def pick(*names):
+              for n in names:
+                  if n in df.columns: return n
 
           col_inst = pick("institutionsnummer","instnr","institutionnummer")
           col_navn = pick("institutionsnavn","navn","institution")
@@ -51,54 +46,30 @@ jobs:
           col_by   = pick("bynavn","by","postdistrikt")
           col_kom  = pick("kommunenavn","kommune")
 
-          required = [col_inst,col_navn,col_vej,col_post,col_by,col_kom]
-          missing = [x for x in required if not x]
-          if missing:
-              raise SystemExit("Mangler kolonner: " + str(missing))
-
-          limit = int(os.getenv("LIMIT","0"))
-          if limit > 0:
-              df = df.head(limit)
-
-          kommuner = requests.get("https://api.dataforsyningen.dk/kommuner?format=json").json()
-          kom2reg = {k["navn"]: k["region"]["navn"] for k in kommuner}
-
-          output = []
-          for _, r in df.iterrows():
-              adr = f"{r[col_vej]} {r.get(col_hus,'')}, {r[col_post]} {r[col_by]}".replace("  "," ").strip(", ")
-              try:
-                  res = requests.get("https://api.dataforsyningen.dk/adresser", params={"q": adr, "per_side":1}).json()
-                  if res:
-                      lon, lat = res[0]["adgangsadresse"]["adgangspunkt"]["koordinater"]
-                  else:
-                      lon = lat = None
-              except:
-                  lon = lat = None
-
-              kommune = r[col_kom]
-              region = kom2reg.get(kommune, "")
-
-              output.append({
-                  "id": str(r[col_inst]),
-                  "navn": r[col_navn],
+          # Lav simpel JSON uden geokodning (lon/lat = null)
+          rows = []
+          for _, r in df.head(300).iterrows():
+              adr = f"{r.get(col_vej,'')} {r.get(col_hus,'')}, {r.get(col_post,'')} {r.get(col_by,'')}".replace("  "," ").strip(", ").strip()
+              rows.append({
+                  "id": str(r.get(col_inst,"") or ""),
+                  "navn": str(r.get(col_navn,"") or ""),
                   "adresse": adr,
-                  "postnr": r[col_post],
-                  "by": r[col_by],
-                  "kommune_navn": kommune,
-                  "region_navn": region,
-                  "lon": lon,
-                  "lat": lat
+                  "postnr": str(r.get(col_post,"") or ""),
+                  "by": str(r.get(col_by,"") or ""),
+                  "kommune_navn": str(r.get(col_kom,"") or ""),
+                  "region_navn": "",
+                  "lon": None,
+                  "lat": None
               })
 
-              time.sleep(0.03)
-
-          pathlib.Path("data/skoler.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
-          print("✅ Skrev", len(output), "skoler til data/skoler.json")
+          pathlib.Path("data/skoler.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+          print("Skrev", len(rows), "rækker til data/skoler.json")
 PY
+
       - name: Commit & Push
         run: |
           git config user.name "Auto Data Bot"
           git config user.email "bot@example.com"
           git add data/skoler.json
-          git commit -m "Automatisk opdateret skoler.json" || echo "Ingen ændringer"
+          git commit -m "Opdater skoler.json (minimal build)" || echo "Ingen ændringer"
           git push
