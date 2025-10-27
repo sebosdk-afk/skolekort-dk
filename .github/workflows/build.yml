@@ -1,0 +1,72 @@
+name: Byg skoler.json automatisk
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"  # hver mandag kl 03:00
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Installer afhængigheder
+        run: pip install pandas requests
+
+      - name: Generer skoler.json
+        run: |
+          python3 << 'EOF'
+          import pandas as pd, requests, json
+
+          df = pd.read_csv("data/folkeskoler.csv", sep=";")
+          rows = []
+
+          kommune_data = requests.get("https://api.dataforsyningen.dk/kommuner?format=json").json()
+
+          def find_region(kommune_navn):
+              for k in kommune_data:
+                  if k["navn"] == kommune_navn:
+                      return k["region"]["navn"]
+              return ""
+
+          for _, r in df.iterrows():
+              adr = f"{r.get('Vejnavn','')} {r.get('Husnr','')}, {r.get('Postnr','')} {r.get('Bynavn','')}".strip()
+              q = requests.get("https://api.dataforsyningen.dk/adresser", params={"q": adr, "per_side":1})
+              js = q.json()
+              if js:
+                  lon, lat = js[0]["adgangsadresse"]["adgangspunkt"]["koordinater"]
+              else:
+                  lon = lat = None
+
+              kommune = r.get("Kommunenavn","")
+              region = find_region(kommune)
+
+              rows.append({
+                  "id": str(r.get("Institutionsnummer","")),
+                  "navn": r.get("Institutionsnavn",""),
+                  "adresse": adr,
+                  "postnr": str(r.get("Postnr","")),
+                  "by": r.get("Bynavn",""),
+                  "kommune_navn": kommune,
+                  "region_navn": region,
+                  "lon": lon,
+                  "lat": lat
+              })
+
+          with open("data/skoler.json","w",encoding="utf-8") as f:
+              json.dump(rows, f, ensure_ascii=False, indent=2)
+          EOF
+
+      - name: Commit & Push
+        run: |
+          git config user.name "Auto Data Bot"
+          git config user.email "bot@example.com"
+          git add data/skoler.json
+          git commit -m "Opdater skoler.json" || echo "Ingen ændringer"
+          git push
