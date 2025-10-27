@@ -3,7 +3,7 @@ name: Byg skoler.json automatisk
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * 1"  # mandag kl. 03:00
+    - cron: "0 3 * * 1"
 
 permissions:
   contents: write
@@ -24,9 +24,9 @@ jobs:
 
       - name: Generer skoler.json (robust m. encoding-fallback)
         env:
-          LIMIT: "200"   # kør færre rækker første run; sæt til 0 eller fjern når det virker
+          LIMIT: "200"
         run: |
-          python3 << 'EOF'
+          python3 - <<'PY'
           import pandas as pd, requests, json, os, time, sys
 
           path = "data/folkeskoler.csv"
@@ -34,6 +34,7 @@ jobs:
           # --- Læs CSV med fallback-encodings ---
           encodings = ["utf-8-sig", "cp1252", "latin1"]
           last_err = None
+          df = None
           for enc in encodings:
               try:
                   df = pd.read_csv(path, sep=None, engine="python", encoding=enc, low_memory=False)
@@ -41,7 +42,6 @@ jobs:
                   break
               except Exception as e:
                   last_err = e
-                  df = None
           if df is None:
               raise SystemExit(f"Kunne ikke læse CSV med encodings {encodings}: {last_err}")
 
@@ -73,4 +73,54 @@ jobs:
 
           # Hent kommuner -> region
           kommuner = requests.get("https://api.dataforsyningen.dk/kommuner?format=json", timeout=30).json()
-          kom2reg = {k["nav]()
+          kom2reg = {k["navn"]: k["region"]["navn"] for k in kommuner}
+
+          rows = []
+          for i, r in df.iterrows():
+              vej = str(r.get(col_vejnavn, "")).strip()
+              hus = str(r.get(col_husnr, "")).strip() if col_husnr else ""
+              pn  = str(r.get(col_postnr, "")).strip()
+              by  = str(r.get(col_bynavn, "")).strip()
+              adr = f"{vej} {hus}, {pn} {by}".replace("  ", " ").strip(", ").strip()
+
+              lon = lat = None
+              try:
+                  q = requests.get("https://api.dataforsyningen.dk/adresser",
+                                   params={"q": adr, "per_side":1},
+                                   timeout=20)
+                  js = q.json()
+                  if js:
+                      lon, lat = js[0]["adgangsadresse"]["adgangspunkt"]["koordinater"]
+              except Exception as e:
+                  print(f"Geokodningsfejl ved '{adr}': {e}", file=sys.stderr)
+
+              kommune = str(r.get(col_kommune,"")).strip()
+              region = kom2reg.get(kommune, "")
+
+              rows.append({
+                  "id": str(r.get(col_instnr,"")).strip(),
+                  "navn": str(r.get(col_instnavn,"")).strip(),
+                  "adresse": adr,
+                  "postnr": pn,
+                  "by": by,
+                  "kommune_navn": kommune,
+                  "region_navn": region,
+                  "lon": lon,
+                  "lat": lat
+              })
+
+              time.sleep(0.03)
+
+          with open("data/skoler.json","w",encoding="utf-8") as f:
+              json.dump(rows, f, ensure_ascii=False, indent=2)
+
+          print(f"Skrev {len(rows)} rækker til data/skoler.json")
+PY
+
+      - name: Commit & Push
+        run: |
+          git config user.name "Auto Data Bot"
+          git config user.email "bot@example.com"
+          git add data/skoler.json
+          git commit -m "Opdater skoler.json" || echo "Ingen ændringer"
+          git push
