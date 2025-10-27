@@ -20,7 +20,6 @@ jobs:
       - name: Installer afhængigheder
         run: pip install pandas chardet
 
-      # Kør Python direkte (ingen heredoc/EOF)
       - name: Generer skoler.json (uden geokodning)
         shell: python
         run: |
@@ -31,13 +30,13 @@ jobs:
           raw = csv_path.read_bytes()
           enc = detect(raw)["encoding"] or "latin1"
 
-          # Læs CSV robust (auto-separator + encoding)
-          df = pd.read_csv(csv_path, sep=None, engine="python", encoding=enc, low_memory=False)
+          # Læs CSV robust (auto-separator; ingen low_memory her)
+          df = pd.read_csv(csv_path, sep=None, engine="python", encoding=enc)
           df.columns = [c.strip().lower() for c in df.columns]
 
           def pick(*names):
               for n in names:
-                  if n in df.columns: 
+                  if n in df.columns:
                       return n
 
           col_inst = pick("institutionsnummer","instnr","institutionnummer")
@@ -49,7 +48,7 @@ jobs:
           col_kom  = pick("kommunenavn","kommune")
 
           rows = []
-          for _, r in df.head(300).iterrows():  # første 300 som test
+          for _, r in df.head(300).iterrows():  # først 300 til test
               adr = f"{r.get(col_vej,'')} {r.get(col_hus,'')}, {r.get(col_post,'')} {r.get(col_by,'')}".replace("  "," ").strip(", ").strip()
               rows.append({
                   "id": str(r.get(col_inst,"") or ""),
