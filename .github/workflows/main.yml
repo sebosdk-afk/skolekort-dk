@@ -22,12 +22,12 @@ jobs:
       - name: Installer afhængigheder
         run: pip install pandas requests chardet
 
-      - name: Generer skoler.json (geokodning + region)
+      - name: Generer skoler.json (geokodning + region, robust kolonnematch)
         env:
-          LIMIT: "300"   # start med 300 for at teste. Sæt til 0 eller slet for ALLE senere.
+          LIMIT: "300"
         shell: python
         run: |
-          import pandas as pd, requests, json, time, os, pathlib
+          import pandas as pd, requests, json, time, os, pathlib, re
           from chardet import detect
 
           csv_path = pathlib.Path("data/folkeskoler.csv")
@@ -36,29 +36,41 @@ jobs:
 
           # Læs CSV robust
           df = pd.read_csv(csv_path, sep=None, engine="python", encoding=enc)
-          df.columns = [c.strip().lower() for c in df.columns]
+          # Vis kolonner i loggen for fejlsøgning
+          print("CSV columns:", list(df.columns))
 
-          def pick(*names):
-              for n in names:
-                  if n in df.columns:
-                      return n
+          # Normaliser kolonnenavne (fjern mellemrum, punktum, specialtegn)
+          def norm(s): return re.sub(r'[^a-z0-9]', '', str(s).lower())
+          original_cols = list(df.columns)
+          df.columns = [norm(c) for c in df.columns]
+          colmap = {norm(o): o for o in original_cols}  # map norm -> original
 
-          col_inst = pick("institutionsnummer","instnr","institutionnummer")
-          col_navn = pick("institutionsnavn","navn","institution")
-          col_vej  = pick("vejnavn","adresse","vej")
-          col_hus  = pick("husnr","husnummer","nr")
-          col_post = pick("postnr","postnummer")
-          col_by   = pick("bynavn","by","postdistrikt")
-          col_kom  = pick("kommunenavn","kommune")
+          # Hjælper til at finde den første kandidat der findes i CSV
+          def find(*cands):
+            for c in cands:
+              nc = norm(c)
+              if nc in df.columns:
+                return nc
 
-          required = [col_inst,col_navn,col_vej,col_post,col_by,col_kom]
-          missing = [x for x in required if not x]
-          if missing:
-              raise SystemExit("Mangler kolonner i CSV: " + str(missing))
+          # Kandidatlister (masse aliaser)
+          inst_col = find("institutionsnummer","instnr","institutionnummer","institutionsnr","institutionensnummer","skoleid","skolekode","skolenr","inst")
+          navn_col = find("institutionsnavn","navn","institution","skolenavn","skole")
+          vej_col  = find("vejnavn","adresse","vej","adresselinje","adresse1","vej")
+          hus_col  = find("husnr","husnummer","nr","hus","hus nr")
+          post_col = find("postnr","postnummer","zip","postalcode","post")
+          by_col   = find("bynavn","by","postdistrikt","city","postdistriktnavn","postby")
+          kom_col  = find("kommunenavn","kommune","kommunenavntekst","kommunenrnavn")
 
+          required = [inst_col,navn_col,vej_col,post_col,by_col,kom_col]
+          if any(c is None for c in required):
+            print("Efter normalisering kunne vi ikke finde alle felter.")
+            print("Normerede kolonner:", list(df.columns))
+            raise SystemExit(f"Mangler: {[('inst',inst_col),('navn',navn_col),('vej',vej_col),('post',post_col),('by',by_col),('kommune',kom_col)]}")
+
+          # Begrænsning ved test
           limit = int(os.getenv("LIMIT","0") or "0")
           if limit > 0:
-              df = df.head(limit)
+            df = df.head(limit)
 
           # Kommune -> region (DAGI)
           kommuner = requests.get("https://api.dataforsyningen.dk/kommuner?format=json", timeout=30).json()
@@ -66,7 +78,11 @@ jobs:
 
           rows = []
           for _, r in df.iterrows():
-              adr = f"{r.get(col_vej,'')} {r.get(col_hus,'')}, {r.get(col_post,'')} {r.get(col_by,'')}".replace("  "," ").strip(", ").strip()
+              vej  = str(r.get(vej_col,"") or "").strip()
+              hus  = str(r.get(hus_col,"") or "").strip() if hus_col else ""
+              post = str(r.get(post_col,"") or "").strip()
+              by   = str(r.get(by_col,"") or "").strip()
+              adr  = f"{vej} {hus}, {post} {by}".replace("  "," ").strip(", ").strip()
 
               lon = lat = None
               try:
@@ -76,25 +92,24 @@ jobs:
                   if isinstance(js, list) and js:
                       lon, lat = js[0]["adgangsadresse"]["adgangspunkt"]["koordinater"]
               except Exception as e:
-                  # log let, men fortsæt
                   print("Geokodningsfejl:", adr, e)
 
-              kommune = str(r.get(col_kom,"") or "").strip()
-              region = kom2reg.get(kommune, "")
+              kom = str(r.get(kom_col,"") or "").strip()
+              reg = kom2reg.get(kom, "")
 
               rows.append({
-                  "id": str(r.get(col_inst,"") or ""),
-                  "navn": str(r.get(col_navn,"") or ""),
+                  "id": str(r.get(inst_col,"") or ""),
+                  "navn": str(r.get(navn_col,"") or ""),
                   "adresse": adr,
-                  "postnr": str(r.get(col_post,"") or ""),
-                  "by": str(r.get(col_by,"") or ""),
-                  "kommune_navn": kommune,
-                  "region_navn": region,
+                  "postnr": post,
+                  "by": by,
+                  "kommune_navn": kom,
+                  "region_navn": reg,
                   "lon": lon,
                   "lat": lat
               })
 
-              time.sleep(0.03)  # vær høflig mod API’et
+              time.sleep(0.03)
 
           pathlib.Path("data/skoler.json").write_text(
               json.dumps(rows, ensure_ascii=False, indent=2),
