@@ -1,0 +1,1 @@
+Upload hele mappen til GitHub for versionsstyring og senere auto-opdatering.

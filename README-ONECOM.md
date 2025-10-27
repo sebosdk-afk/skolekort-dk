@@ -1,0 +1,1 @@
+Se vejledning i beskeden – kort fortalt: upload public/index.html til /DITDOMÆNE.dk/ og data/skoler.json til /DITDOMÆNE.dk/data/skoler.json

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Skolekort – Danmark</title>
+  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    body{margin:0;font-family:system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;background:#0b1020;color:#e7eaf6}
+    header{padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.08);position:sticky;top:0;background:rgba(11,16,32,.85);backdrop-filter:blur(8px)}
+    h1{margin:0;font-size:18px}
+    .wrap{display:grid;grid-template-columns:360px 1fr;gap:16px;padding:16px}
+    .panel{background:#121736;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px}
+    label{display:block;font-size:12px;color:#aab2d5;margin:8px 0 6px}
+    select{width:100%;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.04);color:#e7eaf6}
+    #map{height:calc(100vh - 140px);border-radius:12px;border:1px solid rgba(255,255,255,.08)}
+    .details{margin-top:12px;padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.03);font-size:14px}
+    .muted{color:#aab2d5;font-size:12px}
+    .count{font-size:12px;color:#aab2d5;margin-top:6px}
+    @media (max-width: 980px){.wrap{grid-template-columns:1fr}#map{height:50vh}}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Skolekort – Danmark</h1>
+    <div class="muted">Vælg Region → Kommune → Skole.</div>
+  </header>
+
+  <div class="wrap">
+    <aside class="panel" aria-label="Filtre">
+      <label for="region">Region</label>
+      <select id="region"><option value="">Vælg region</option></select>
+
+      <label for="kommune">Kommune</label>
+      <select id="kommune" disabled><option value="">Vælg kommune</option></select>
+
+      <label for="skole">Skole</label>
+      <select id="skole" disabled><option value="">Vælg skole</option></select>
+
+      <div class="count" id="count">0 skoler</div>
+
+      <div class="details" id="details">
+        <div class="muted">Vælg en skole for at se detaljer.</div>
+      </div>
+    </aside>
+    <main>
+      <div id="map"></div>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <script>
+    const DATA_URL = '/data/skoler.json'; // absolut sti
+    const DK_BOUNDS = [[7.9, 54.5],[15.6, 58.0]];
+    let SKOLER = [];
+    let map;
+
+    const $ = id => document.getElementById(id);
+    const regionSel = $('region'), kommuneSel = $('kommune'), skoleSel = $('skole');
+    const details = $('details'), count = $('count');
+
+    fetch(DATA_URL, {cache:'no-store'})
+      .then(r => r.json())
+      .then(data => { SKOLER = data; boot(); })
+      .catch(err => { console.error(err); details.innerHTML='<div style="color:#ffb4b4">Fejl: Kan ikke hente data.</div>'; });
+
+    function boot(){
+      initMap();
+      initFilters();
+      draw(SKOLER, false);
+    }
+
+    function initMap(){
+      map = new maplibregl.Map({
+        container:'map',
+        style:'https://demotiles.maplibre.org/style.json',
+        center:[10.5,56.2],
+        zoom:5.8,
+        maxBounds: DK_BOUNDS
+      });
+      map.addControl(new maplibregl.NavigationControl());
+      map.on('load', ()=>{
+        map.addSource('skoler',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+        map.addLayer({id:'points',type:'circle',source:'skoler',paint:{'circle-radius':6,'circle-color':'#5b8cff','circle-stroke-color':'#fff','circle-stroke-width':1}});
+        map.on('click','points', e=>{
+          const f=e.features[0], p=f.properties;
+          new maplibregl.Popup().setLngLat(f.geometry.coordinates).setHTML(`<b>${p.navn}</b><br>${p.adresse}, ${p.postnr} ${p.by}<br>${p.kommune_navn} · ${p.region_navn}`).addTo(map);
+        });
+      });
+    }
+
+    function uniq(a){return Array.from(new Set(a));}
+
+    function initFilters(){
+      const regions = uniq(SKOLER.map(s=>s.region_navn)).sort();
+      for(const r of regions){ const o=document.createElement('option'); o.value=r; o.textContent=r; regionSel.appendChild(o); }
+      regionSel.disabled=false;
+
+      regionSel.onchange = ()=>{
+        const r=regionSel.value;
+        const kommuner = uniq(SKOLER.filter(s=>!r||s.region_navn===r).map(s=>s.kommune_navn)).sort();
+        kommuneSel.innerHTML='<option value="">Vælg kommune</option>';
+        for(const k of kommuner){ const o=document.createElement('option'); o.value=k; o.textContent=k; kommuneSel.appendChild(o); }
+        kommuneSel.disabled=false;
+        skoleSel.innerHTML='<option value="">Vælg skole</option>'; skoleSel.disabled=true;
+        draw(filterRows(), true);
+      };
+
+      kommuneSel.onchange = ()=>{
+        const rows = filterRows();
+        const skoler = rows.sort((a,b)=>a.navn.localeCompare(b.navn));
+        skoleSel.innerHTML='<option value="">Vælg skole</option>';
+        for(const s of skoler){ const o=document.createElement('option'); o.value=String(s.id); o.textContent=s.navn; skoleSel.appendChild(o); }
+        skoleSel.disabled=false;
+        draw(rows, true);
+      };
+
+      skoleSel.onchange = ()=>{
+        const id=skoleSel.value;
+        const s = SKOLER.find(x=>String(x.id)===id);
+        if(s){ showDetails(s); draw([s], true); }
+      };
+    }
+
+    function filterRows(){
+      const r=regionSel.value, k=kommuneSel.value, id=skoleSel.value;
+      return SKOLER.filter(s => (!r || s.region_navn===r) && (!k || s.kommune_navn===k) && (!id || String(s.id)===id));
+    }
+
+    function draw(rows, fit){
+      const fc={type:'FeatureCollection',features:rows.map(s=>({
+        type:'Feature',
+        geometry:{type:'Point',coordinates:[Number(s.lon),Number(s.lat)]},
+        properties:{
+          id:String(s.id), navn:s.navn||'', adresse:s.adresse||'',
+          postnr:String(s.postnr||''), by:s.by||'',
+          kommune_navn:s.kommune_navn||'', region_navn:s.region_navn||''
+        }
+      }))};
+      if(map && map.getSource('skoler')) map.getSource('skoler').setData(fc);
+      count.textContent = rows.length + (rows.length===1?' skole':' skoler');
+      if(fit && rows.length){
+        const xs=rows.map(r=>Number(r.lon)), ys=rows.map(r=>Number(r.lat));
+        const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+        if(isFinite(minX)&&isFinite(minY)&&isFinite(maxX)&&isFinite(maxY)){
+          map.fitBounds([[minX,minY],[maxX,maxY]],{padding:40,duration:350});
+        }
+      }
+      if(rows.length===0){
+        map.easeTo({center:[10.5,56.2],zoom:5.8,duration:350});
+        details.innerHTML='<div class="muted">Ingen resultater. Vælg region/kommune først.</div>';
+      } else if(rows.length===1){
+        showDetails(rows[0]);
+      } else {
+        details.innerHTML='<div class="muted">Vælg en skole for at se detaljer.</div>';
+      }
+    }
+
+    function showDetails(s){
+      const html = [
+        `<b>${s.navn||''}</b>`,
+        `${s.adresse||''}, ${s.postnr||''} ${s.by||''}`,
+        `${s.kommune_navn||''} · ${s.region_navn||''}`,
+        s.telefon?('Telefon: '+s.telefon):'',
+        s.hjemmeside?(`<a href="${s.hjemmeside}" target="_blank" rel="noopener">Hjemmeside</a>`):''
+      ].filter(Boolean).join('<br>');
+      details.innerHTML = html;
+    }
+  </script>
+</body>
+</html>
