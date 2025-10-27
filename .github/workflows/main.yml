@@ -95,7 +95,6 @@ jobs:
           pathlib.Path("data/skoler.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
           print("✅ Skrev", len(output), "skoler til data/skoler.json")
 PY
-
       - name: Commit & Push
         run: |
           git config user.name "Auto Data Bot"
