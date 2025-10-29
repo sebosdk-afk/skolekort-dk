@@ -73,6 +73,17 @@ jobs:
           col_reg  = pick("regionnavn","region")
           col_lat  = pick("geobreddegrad","latitude","lat")
           col_lon  = pick("geolaengdegrad","longitude","lon","lng")
+          col_web = pick("hjemmeside","webadresse","internetadresse","url","hjemmesideurl")
+
+def clean_url(v):
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    # fjern mellemrum, tilføj https:// hvis mangler
+    s = s.replace(" ", "")
+    if not s.startswith(("http://", "https://")):
+        s = "https://" + s.lstrip("/")
+    return s
 
           req = [col_inst,col_navn,col_adr,col_post,col_by,col_kom]
           miss = [c for c in req if not c]
@@ -104,6 +115,8 @@ jobs:
               "region_navn": str(r.get(col_reg,"") or "") if col_reg else "",
               "lon": to_float(r.get(col_lon)) if col_lon else None,
               "lat": to_float(r.get(col_lat)) if col_lat else None
+              "hjemmeside": clean_url(r.get(col_web, "")) if col_web else "",
+
             })
 
           out = DATA_DIR / "skoler.json"
