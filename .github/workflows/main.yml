@@ -22,9 +22,9 @@ jobs:
       - name: Installer afhængigheder
         run: pip install pandas chardet
 
-      - name: Generer skoler.json (robust encoding + rens)
+      - name: Generer skoler.json (robust + hjemmesidefelt)
         env:
-          LIMIT: "0"     # "0" = alle rækker; sæt "300" for at teste hurtigt
+          LIMIT: "0"   # "0" = alle rækker. Sæt "300" for en hurtig test.
         shell: python
         run: |
           import pandas as pd, json, os, pathlib, re, csv, chardet
@@ -32,6 +32,7 @@ jobs:
           DATA_DIR = pathlib.Path("data")
           csv_path = DATA_DIR / "folkeskoler.csv"
 
+          # --- Encoding + delimiter detektion ---
           raw = csv_path.read_bytes()
           head = raw[:65536]
           enc = (chardet.detect(head).get("encoding") or "utf-8").lower()
@@ -51,12 +52,14 @@ jobs:
 
           print("Encoding:", enc, "Delimiter:", repr(sep))
 
+          # --- Læs CSV ---
           df = pd.read_csv(csv_path, sep=sep, engine="python", encoding=enc)
 
-          # fjern nulbytes + trim
+          # --- Fjern nulbytes + trim tekst ---
           for c in df.select_dtypes(include=["object"]).columns:
             df[c] = df[c].astype(str).str.replace("\x00","",regex=False).str.strip()
 
+          # --- Kolonnematch ---
           def norm(s): return re.sub(r'[^a-z0-9]','',str(s).lower())
           nmap = {c: norm(c) for c in df.columns}
           inv  = {v:k for k,v in nmap.items()}
@@ -73,21 +76,22 @@ jobs:
           col_reg  = pick("regionnavn","region")
           col_lat  = pick("geobreddegrad","latitude","lat")
           col_lon  = pick("geolaengdegrad","longitude","lon","lng")
-          col_web = pick("hjemmeside","webadresse","internetadresse","url","hjemmesideurl")
 
-def clean_url(v):
-    s = str(v or "").strip()
-    if not s:
-        return ""
-    # fjern mellemrum, tilføj https:// hvis mangler
-    s = s.replace(" ", "")
-    if not s.startswith(("http://", "https://")):
-        s = "https://" + s.lstrip("/")
-    return s
+          # --- NYT: hjemmeside-kolonne + URL-rens ---
+          col_web  = pick("hjemmeside","webadresse","internetadresse","url","hjemmesideurl")
+          def clean_url(v):
+            s = str(v or "").strip()
+            if not s:
+              return ""
+            s = s.replace(" ", "")
+            if not s.startswith(("http://","https://")):
+              s = "https://" + s.lstrip("/")
+            return s
 
           req = [col_inst,col_navn,col_adr,col_post,col_by,col_kom]
           miss = [c for c in req if not c]
-          if miss: raise SystemExit(f"Mangler kolonner: {miss}\nHar: {list(df.columns)}")
+          if miss:
+            raise SystemExit(f"Mangler kolonner: {miss}\nHar: {list(df.columns)}")
 
           def to_float(v):
             try:
@@ -114,9 +118,9 @@ def clean_url(v):
               "kommune_navn": str(r.get(col_kom,"") or ""),
               "region_navn": str(r.get(col_reg,"") or "") if col_reg else "",
               "lon": to_float(r.get(col_lon)) if col_lon else None,
-              "lat": to_float(r.get(col_lat)) if col_lat else None
-              "hjemmeside": clean_url(r.get(col_web, "")) if col_web else "",
-
+              "lat": to_float(r.get(col_lat)) if col_lat else None,
+              # --- NYT: hjemmeside medtaget og renset ---
+              "hjemmeside": clean_url(r.get(col_web,"")) if col_web else ""
             })
 
           out = DATA_DIR / "skoler.json"
@@ -128,5 +132,5 @@ def clean_url(v):
           git config user.name "Auto Data Bot"
           git config user.email "bot@example.com"
           git add data/skoler.json
-          git commit -m "Opdateret skoler.json (robust encoding fix)" || echo "Ingen ændringer"
+          git commit -m "Opdateret skoler.json (inkl. hjemmeside)"
           git push
