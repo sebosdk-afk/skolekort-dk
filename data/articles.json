@@ -1,0 +1,15 @@
+{
+  "sources": [
+    {"name":"Folkeskole.dk","url":"https://www.folkeskole.dk/"},
+    {"name":"Undervisningsministeriet","url":"https://www.uvm.dk/"}
+  ],
+  "articles": [
+    {
+      "title": "Eksempelartikel",
+      "source": "Folkeskole.dk",
+      "url": "https://www.folkeskole.dk/…",
+      "published": "2025-11-05",
+      "tags": ["inklusion","pædagogik"]
+    }
+  ]
+}
